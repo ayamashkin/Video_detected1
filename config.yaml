@@ -1,0 +1,104 @@
+# ═══════════════════════════════════════════════
+#  Конфигурация видеодетектора + аналоговый манометр (стрелочный)
+#  2026-07-13 19:10:00 MSK
+# ═══════════════════════════════════════════════
+
+detection:
+  source: 0
+  model: "models/best.pt"
+  confidence_threshold: 0.40
+  iou_threshold: 0.40
+  buffer_size: 1
+
+inference:
+  device: "cpu"
+  imgsz: 640
+  skip_frames: 5
+
+classes:
+  mode: "coco"
+  custom: []
+
+targets:
+  classes:
+    - wheel
+    - manometer
+    - person
+    - car
+  expected_seconds: null
+
+tracking:
+  tracker: "bytetrack.yaml"
+  distance_threshold: 120
+  max_disappear: 30
+
+export:
+  output_dir: "./output"
+  formats: [csv, xlsx, json]
+  filename_template: "session_{date}_{timestamp}"
+
+ui:
+  refresh_interval_ms: 300
+
+
+# ═══════════════════════════════════════════════
+#  Захват кадров манометра (сохранение крупных планов)
+# ═══════════════════════════════════════════════
+manometer_ocr:
+  enabled: true
+  output_dir: "./output/manometer_crops"
+  save_interval: 2        # сохранять каждые 5 кадров на один и тот же ID
+  min_size_ratio: 0.05   # 5% площади кадра
+
+
+# ═══════════════════════════════════════════════
+#  Human-Object Interaction (HOI)
+# ═══════════════════════════════════════════════
+interactions:
+  enabled: true
+  pose_model: "models/yolov8n-pose.pt"
+  proximity_threshold: 150
+  min_interaction_frames: 5
+  max_gap_seconds: 1.0
+
+  rules:
+    - action: "any"
+      objects: [ "manometer", "wheel", "person" ]
+      label: "измерение давление в колесе"
+    - action: "any"
+      objects: ["cup", "mug", "bottle"]
+      label: "перерыв/питьё"
+    - action: "any"
+      objects: ["cell phone", "phone", "smartphone"]
+      label: "использование телефона"
+    - action: "any"
+      objects: ["book", "notebook"]
+      label: "чтение/документация"
+    - action: "any"
+      objects: ["pen", "pencil"]
+      label: "письмо/разметка"
+
+
+# ═══════════════════════════════════════════════════════
+#  Правила классификации действий (эвристика keypoints)
+# ═══════════════════════════════════════════════════════
+action_rules:
+  using_phone:
+    wrist_up_threshold: 0.6
+    phone_classes: ["cell phone", "phone", "smartphone"]
+    phone_distance_px: 200
+    confidence: 0.85
+  walking:
+    hip_var_threshold: 0.05
+    x_spread_threshold: 0.8
+    confidence: 0.80
+  sitting:
+    y_spread_threshold: 0.35
+    hip_var_threshold: 0.02
+    confidence: 0.85
+  working:
+    wrist_up_threshold: 0.25
+    hip_var_threshold: 0.03
+    confidence: 0.70
+  standing:
+    confidence: 0.60

@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Сессионный видеодетектор</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            margin: 0; padding: 20px;
+            font-family: "Segoe UI", Arial, sans-serif;
+            background: #121212; color: #eee;
+        }
+        h1 { margin-top: 0; font-size: 1.4rem; }
+        .grid {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 20px;
+        }
+        @media (max-width: 900px) {
+            .grid { grid-template-columns: 1fr; }
+        }
+        .video-box {
+            background: #000; border-radius: 10px;
+            overflow: hidden; position: relative;
+            min-height: 360px;
+        }
+        .video-box img {
+            width: 100%; height: 100%; object-fit: contain; display: block;
+        }
+        .panel {
+            background: #1e1e1e; border-radius: 10px;
+            padding: 15px; display: flex; flex-direction: column; gap: 14px;
+        }
+        .panel h2 { margin: 0; font-size: 1.1rem; color: #4caf50; }
+        .controls {
+            display: flex; gap: 10px; flex-wrap: wrap;
+        }
+        button {
+            padding: 10px 18px; border: none; border-radius: 6px;
+            font-size: 0.95rem; cursor: pointer; transition: filter .2s;
+        }
+        button:disabled { opacity: .4; cursor: not-allowed; }
+        .btn-start { background: #4caf50; color: #fff; }
+        .btn-stop  { background: #f44336; color: #fff; }
+        .btn-export{ background: #2196f3; color: #fff; }
+        .timer {
+            font-size: 1.6rem; font-variant-numeric: tabular-nums;
+            color: #ff5252; min-height: 36px;
+        }
+        label { font-size: 0.85rem; color: #aaa; }
+        input, select {
+            width: 100%; padding: 8px; border-radius: 6px;
+            border: 1px solid #444; background: #2a2a2a; color: #eee;
+            font-size: 0.9rem;
+        }
+        .hint { font-size: 0.8rem; color: #888; }
+        table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+        th, td { padding: 8px 6px; text-align: left; border-bottom: 1px solid #333; }
+        th { color: #aaa; font-weight: 600; }
+        .status-ok { color: #4caf50; font-weight: 700; }
+        .status-bad{ color: #f44336; font-weight: 700; }
+        .status-low{ color: #ff9800; font-weight: 700; }
+        .empty { color: #666; font-style: italic; padding: 12px 0; }
+        .badge { display:inline-block; padding:2px 8px; border-radius:4px; font-size:.75rem; background:#333; }
+        .section-title { font-size: 1rem; color: #ccc; margin: 10px 0 4px; }
+        .export-group { display: flex; gap: 8px; flex-wrap: wrap; }
+        .export-group button { padding: 8px 14px; font-size: 0.85rem; }
+        .config-info {
+            font-size: 0.8rem; color: #777;
+            background: #181818; padding: 10px; border-radius: 6px;
+        }
+        .class-tag {
+            display: inline-block; padding: 2px 8px; border-radius: 4px;
+            background: #2a3a2a; color: #8bc34a; font-size: 0.78rem; margin: 2px 2px 0 0;
+        }
+    </style>
+<base target="_blank">
+</head>
+<body>
+    <h1>📹 Сессионный видеодетектор</h1>
+    <div class="grid">
+        <div class="video-box">
+            <img src="/video_feed" alt="video stream" />
+        </div>
+
+        <div class="panel">
+            <h2>⚙️ Управление сессией</h2>
+
+            <div id="configInfo" class="config-info">
+                Загрузка конфигурации…
+            </div>
+
+            <div>
+                <label>Целевые объекты (через запятую)</label>
+                <input id="targets" type="text" value=""
+                       placeholder="car, person, truck..." />
+                <div class="hint">Если оставить пустым — используются классы из config.yaml</div>
+            </div>
+
+            <div>
+                <label>Нормативное время, сек (опционально)</label>
+                <input id="expected" type="number" placeholder="" />
+                <div class="hint">Пустое поле = норматив из config.yaml (если задан)</div>
+            </div>
+
+            <div class="controls">
+                <button id="btnStart" class="btn-start">▶ Start</button>
+                <button id="btnStop" class="btn-stop" disabled>■ Stop</button>
+            </div>
+
+            <div class="timer" id="timer">00:00</div>
+
+            <div id="exportBlock" style="display:none;">
+                <label>Экспорт отчёта</label>
+                <div class="export-group">
+                    <button id="btnCsv" class="btn-export">CSV</button>
+                    <button id="btnXlsx" class="btn-export">Excel</button>
+                    <button id="btnJson" class="btn-export">JSON</button>
+                </div>
+                <div class="hint" id="exportPath"></div>
+            </div>
+
+            <div id="results" style="display:none;">
+                <div class="section-title">✅ Целевые объекты</div>
+                <div id="targetTable"></div>
+
+                <div class="section-title">⚠️ Посторонние объекты</div>
+                <div id="ignoredTable"></div>
+            </div>
+
+            <div id="waitText" class="empty">Нажмите Start для начала сессии</div>
+        </div>
+    </div>
+
+    <script>
+        const $ = id => document.getElementById(id);
+        let pollTimer = null;
+        let cfg = {};
+
+        async function loadConfig() {
+            const r = await fetch("/api/config");
+            cfg = await r.json();
+            const targets = cfg.targets.classes.join(", ");
+            const exp = cfg.targets.expected_seconds ?? "не задан";
+            $("targets").placeholder = targets;
+            $("expected").placeholder = exp;
+
+            let clsHtml = "";
+            if (cfg.classes.mode === "custom" && cfg.classes.custom.length) {
+                clsHtml = `<div style="margin-top:6px;"><b>Доступные zero-shot классы:</b> ` +
+                    cfg.classes.custom.map(c => `<span class="class-tag">${c}</span>`).join("") +
+                    `</div>`;
+            } else {
+                clsHtml = `<div style="margin-top:6px; color:#888;">Режим COCO (80 стандартных классов)</div>`;
+            }
+
+            $("configInfo").innerHTML = `
+                <b>Модель:</b> ${cfg.detection.model} |
+                <b>Conf:</b> ${cfg.detection.confidence_threshold} |
+                <b>Режим:</b> ${cfg.classes.mode}<br>
+                <b>Целевые:</b> ${targets} |
+                <b>Норматив:</b> ${exp} с |
+                <b>Сохранение:</b> ${cfg.export.output_dir}
+                ${clsHtml}
+            `;
+        }
+        loadConfig();
+
+        async function post(url, body) {
+            const r = await fetch(url, {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify(body)
+            });
+            return r.json();
+        }
+
+        function fmtTime(totalSec) {
+            const m = Math.floor(totalSec / 60).toString().padStart(2, "0");
+            const s = Math.floor(totalSec % 60).toString().padStart(2, "0");
+            return `${m}:${s}`;
+        }
+
+        function renderTable(rows, containerId, isTarget) {
+            const wrap = $(containerId);
+            if (!rows.length) {
+                wrap.innerHTML = '<p class="empty">Нет данных</p>';
+                return;
+            }
+            let html = `<table>
+                <thead><tr>
+                    <th>Класс</th>
+                    <th>ID</th>
+                    <th>Первое появление</th>
+                    <th>Время в кадре, с</th>
+                    ${isTarget ? "<th>Норматив, с</th><th>Отклонение</th><th>Статус</th>" : ""}
+                </tr></thead><tbody>`;
+            for (const r of rows) {
+                let statusCell = "";
+                if (isTarget && r.status) {
+                    const cls = r.status === "норма" ? "status-ok" : (r.status === "превышение" ? "status-bad" : "status-low");
+                    statusCell = `<td class="${cls}">${r.status}</td>`;
+                }
+                html += `<tr>
+                    <td>${r.class}</td>
+                    <td>${r.tracker_id}</td>
+                    <td>${r.first_seen}</td>
+                    <td>${r.total_duration_sec}</td>
+                    ${isTarget ? `<td>${r.expected_sec ?? "—"}</td><td>${r.deviation_sec ?? "—"}</td>${statusCell}</td>` : ""}
+                </tr>`;
+            }
+            html += "</tbody></table>";
+            wrap.innerHTML = html;
+        }
+
+        $("btnStart").onclick = async () => {
+            const raw = $("targets").value;
+            const targets = raw ? raw.split(",").map(s => s.trim().toLowerCase()).filter(Boolean) : null;
+            const expRaw = $("expected").value;
+            const expected = expRaw ? parseFloat(expRaw) : null;
+
+            const res = await post("/api/start", { target_classes: targets, expected_seconds: expected });
+            if (res.error) { alert(res.error); return; }
+
+            $("btnStart").disabled = true;
+            $("btnStop").disabled = false;
+            $("exportBlock").style.display = "none";
+            $("results").style.display = "none";
+            $("waitText").style.display = "block";
+            $("waitText").textContent = "Сессия записывается…";
+
+            pollTimer = setInterval(async () => {
+                const st = await (await fetch("/api/status")).json();
+                $("timer").textContent = st.recording ? fmtTime(st.elapsed) : "00:00";
+            }, cfg.ui?.refresh_interval_ms || 500);
+        };
+
+        $("btnStop").onclick = async () => {
+            clearInterval(pollTimer);
+            const res = await post("/api/stop", {});
+            if (res.error) { alert(res.error); return; }
+
+            $("btnStart").disabled = false;
+            $("btnStop").disabled = true;
+            $("timer").textContent = fmtTime(res.session_duration_sec);
+            $("waitText").style.display = "none";
+            $("results").style.display = "block";
+            $("exportBlock").style.display = "block";
+            $("exportPath").textContent = `Сохранено в: ${cfg.export?.output_dir || "./output"}`;
+
+            renderTable(res.targets, "targetTable", true);
+            const ign = res.ignored_summary.length ? res.ignored_summary.map(x => ({
+                class: x.class,
+                tracker_id: `<span class="badge">${x.count} шт.</span>`,
+                first_seen: "—",
+                total_duration_sec: x.total_duration_sec,
+            })) : [];
+            renderTable(ign, "ignoredTable", false);
+        };
+
+        $("btnCsv").onclick  = () => { window.location.href = "/api/export/csv"; };
+        $("btnXlsx").onclick = () => { window.location.href = "/api/export/xlsx"; };
+        $("btnJson").onclick = () => { window.location.href = "/api/export/json"; };
+    </script>
+</body>
+</html>
